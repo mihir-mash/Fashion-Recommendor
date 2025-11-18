@@ -1,0 +1,7 @@
+﻿venv/
+__pycache__/
+*.pyc
+*.pkl
+*.pth
+.env
+backend/data/

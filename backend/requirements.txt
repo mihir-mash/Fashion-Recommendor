@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pydantic
+numpy
+pandas
+Pillow
+requests
+python-multipart
+faiss-cpu; platform_system != 'Windows'
+annoy

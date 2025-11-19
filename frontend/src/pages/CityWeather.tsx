@@ -1,88 +1,86 @@
 import { useParams } from "react-router-dom";
+import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
-import { Cloud, CloudRain, Sun, CloudDrizzle, Snowflake } from "lucide-react";
+import { Cloud, CloudRain, Sun, CloudDrizzle, Snowflake, Loader2 } from "lucide-react";
 import Footer from "@/components/Footer";
-import outfit1 from "@/assets/outfit-1.jpg";
-import outfit2 from "@/assets/outfit-2.jpg";
-import outfit3 from "@/assets/outfit-3.jpg";
-import outfit4 from "@/assets/outfit-4.jpg";
+import { useToast } from "@/hooks/use-toast";
 
-const cityData: Record<string, any> = {
-  hyderabad: {
-    name: "Hyderabad",
-    temp: "32°C",
-    weather: "Humid",
-    icon: CloudDrizzle,
-    outfits: [
-      { image: outfit1, name: "Cotton Kurta Set", tag: "Best for humid weather" },
-      { image: outfit2, name: "Light Linen Shirt", tag: "Perfect for hot days" },
-      { image: outfit3, name: "Breathable Dress", tag: "Ideal for summer" },
-      { image: outfit4, name: "Casual Tee & Shorts", tag: "Stay cool & comfortable" },
-    ],
-  },
-  shimla: {
-    name: "Shimla",
-    temp: "15°C",
-    weather: "Cold",
-    icon: Snowflake,
-    outfits: [
-      { image: outfit1, name: "Woolen Sweater", tag: "Perfect for cold weather" },
-      { image: outfit2, name: "Winter Jacket", tag: "Stay warm & stylish" },
-      { image: outfit3, name: "Layered Outfit", tag: "Great for chilly days" },
-      { image: outfit4, name: "Cozy Cardigan", tag: "Best for mountain cold" },
-    ],
-  },
-  goa: {
-    name: "Goa",
-    temp: "30°C",
-    weather: "Sunny",
-    icon: Sun,
-    outfits: [
-      { image: outfit1, name: "Beach Dress", tag: "Perfect for sunny days" },
-      { image: outfit2, name: "Casual Shorts Set", tag: "Ideal for beach vibes" },
-      { image: outfit3, name: "Flowy Sundress", tag: "Best for coastal heat" },
-      { image: outfit4, name: "Tank & Shorts", tag: "Stay breezy" },
-    ],
-  },
-  shillong: {
-    name: "Shillong",
-    temp: "20°C",
-    weather: "Rainy",
-    icon: CloudRain,
-    outfits: [
-      { image: outfit1, name: "Waterproof Jacket", tag: "Great for monsoon" },
-      { image: outfit2, name: "Rain-Ready Attire", tag: "Perfect for rainy days" },
-      { image: outfit3, name: "Light Raincoat Look", tag: "Stay dry & stylish" },
-      { image: outfit4, name: "Monsoon Casual", tag: "Best for wet weather" },
-    ],
-  },
-  delhi: {
-    name: "Delhi",
-    temp: "28°C",
-    weather: "Sunny",
-    icon: Sun,
-    outfits: [
-      { image: outfit1, name: "Smart Casuals", tag: "Perfect for sunny days" },
-      { image: outfit2, name: "Trendy Streetwear", tag: "Ideal for city heat" },
-      { image: outfit3, name: "Summer Formal", tag: "Best for warm weather" },
-      { image: outfit4, name: "Breezy Outfit", tag: "Stay comfortable" },
-    ],
-  },
+const API_BASE_URL = "http://localhost:8000";
+
+const iconMap: Record<string, any> = {
+  humid: CloudDrizzle,
+  cold: Snowflake,
+  sunny: Sun,
+  rainy: CloudRain,
+  warm: Sun,
+  mild: Cloud,
 };
 
 const CityWeather = () => {
   const { city } = useParams<{ city: string }>();
-  const data = cityData[city?.toLowerCase() || ""];
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const { toast } = useToast();
 
-  if (!data) {
+  useEffect(() => {
+    if (!city) {
+      setError("City not specified");
+      setLoading(false);
+      return;
+    }
+
+    const fetchWeatherData = async () => {
+      try {
+        setLoading(true);
+        const response = await fetch(
+          `${API_BASE_URL}/recommend/weather?location=${encodeURIComponent(city)}&k=6`
+        );
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch weather data: ${response.statusText}`);
+        }
+        
+        const result = await response.json();
+        setData(result);
+        setError(null);
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "Failed to load weather data";
+        setError(errorMessage);
+        toast({
+          title: "Error",
+          description: errorMessage,
+          variant: "destructive",
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchWeatherData();
+  }, [city, toast]);
+
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <p className="text-xl text-muted-foreground">City not found</p>
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
       </div>
     );
   }
 
-  const WeatherIcon = data.icon;
+  if (error || !data) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p className="text-xl text-muted-foreground">
+          {error || "City not found"}
+        </p>
+      </div>
+    );
+  }
+
+  const weatherCondition = data.season?.toLowerCase() || "sunny";
+  const WeatherIcon = iconMap[weatherCondition] || Sun;
+  const temp = data.temp ? `${Math.round(data.temp)}°C` : "N/A";
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -91,12 +89,12 @@ const CityWeather = () => {
         <section className="py-16 px-4 bg-gradient-to-b from-primary/5 to-background">
           <div className="container mx-auto text-center max-w-3xl">
             <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-6">
-              {data.name}
+              {data.location || city}
             </h1>
             <WeatherIcon className="w-20 h-20 mx-auto mb-6 text-primary" />
-            <p className="text-5xl font-bold text-primary mb-4">{data.temp}</p>
-            <span className="inline-block px-4 py-2 bg-primary/10 text-primary rounded-full text-lg">
-              {data.weather}
+            <p className="text-5xl font-bold text-primary mb-4">{temp}</p>
+            <span className="inline-block px-4 py-2 bg-primary/10 text-primary rounded-full text-lg capitalize">
+              {data.season || "N/A"}
             </span>
           </div>
         </section>
@@ -107,30 +105,47 @@ const CityWeather = () => {
             <h2 className="text-3xl font-bold text-foreground mb-8 text-center">
               Recommended Outfits
             </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-              {data.outfits.map((outfit: any, index: number) => (
-                <Card
-                  key={index}
-                  className="overflow-hidden transition-all hover:shadow-lg hover:scale-105"
-                >
-                  <div className="aspect-[3/4] overflow-hidden">
-                    <img
-                      src={outfit.image}
-                      alt={outfit.name}
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-                  <CardContent className="p-4">
-                    <h3 className="text-lg font-semibold text-foreground mb-2">
-                      {outfit.name}
-                    </h3>
-                    <span className="inline-block px-3 py-1 bg-primary/10 text-primary rounded-full text-sm">
-                      {outfit.tag}
-                    </span>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+            {data.results && data.results.length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                {data.results.map((item: any, index: number) => (
+                  <Card
+                    key={item.id || index}
+                    className="overflow-hidden transition-all hover:shadow-lg hover:scale-105"
+                  >
+                    <div className="aspect-[3/4] overflow-hidden bg-muted">
+                      {item.image_url ? (
+                        <img
+                          src={`${API_BASE_URL}${item.image_url}`}
+                          alt={item.product_display_name || "Outfit"}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='600'%3E%3Crect fill='%23ddd' width='400' height='600'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%23999'%3ENo Image%3C/text%3E%3C/svg%3E";
+                          }}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                          No Image
+                        </div>
+                      )}
+                    </div>
+                    <CardContent className="p-4">
+                      <h3 className="text-lg font-semibold text-foreground mb-2">
+                        {item.product_display_name || `Item ${item.id}`}
+                      </h3>
+                      {item.score !== undefined && (
+                        <span className="inline-block px-3 py-1 bg-primary/10 text-primary rounded-full text-sm">
+                          Score: {item.score.toFixed(2)}
+                        </span>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <p className="text-center text-muted-foreground">
+                No recommendations available for this location.
+              </p>
+            )}
           </div>
         </section>
       </main>

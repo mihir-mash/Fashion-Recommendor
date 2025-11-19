@@ -1,7 +1,8 @@
 ﻿venv/
-__pycache__/
+backend__pycache__/
 *.pyc
 *.pkl
 *.pth
 .env
 backend/data/
+styles.csv

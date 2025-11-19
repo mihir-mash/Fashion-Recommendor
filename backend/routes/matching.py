@@ -29,10 +29,24 @@ class MatchRequest(BaseModel):
 @router.post("/outfit")
 async def match_outfit(image: Optional[UploadFile] = File(None), item_id: Optional[str] = Form(None), target_type: Optional[str] = Form(None), k: int = Form(6)):
     try:
+        if _embeddings is None:
+            raise HTTPException(status_code=500, detail={"error": "embeddings_not_loaded"})
+        if _meta is None or len(_meta) == 0:
+            raise HTTPException(status_code=500, detail={"error": "meta_not_loaded"})
+            
         if image is not None:
             content = await image.read()
             pil = image_to_pil(content)
-            emb = loader.load_image_model().embed_image(pil)
+            img_model = loader.load_image_model()
+            if img_model is None:
+                raise HTTPException(status_code=500, detail={"error": "image_model_not_loaded"})
+            emb = img_model.embed_image(pil)
+            # Ensure embedding dimension matches stored embeddings (768)
+            if len(emb) != 768:
+                if len(emb) < 768:
+                    emb = np.pad(emb, (0, 768 - len(emb)), mode='constant')
+                else:
+                    emb = emb[:768]
         elif item_id is not None:
             emb = get_embedding_by_id(item_id)
         else:
@@ -42,7 +56,10 @@ async def match_outfit(image: Optional[UploadFile] = File(None), item_id: Option
 
         # try outfit model
         try:
-            matches = _outfit_model.predict_matches(emb, target_type, k)
+            if _outfit_model is not None:
+                matches = _outfit_model.predict_matches(emb, target_type, k)
+            else:
+                raise AttributeError("Outfit model not available")
         except Exception:
             # fallback: brute-force find items in complementary categories
             scores, ids = search_index(_index, emb, k, embeddings=_embeddings)
@@ -66,5 +83,14 @@ async def match_outfit(image: Optional[UploadFile] = File(None), item_id: Option
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(e)
-        raise HTTPException(status_code=500, detail={"error": "match_failure", "details": str(e)})
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.exception(f"Error in match_outfit: {e}\n{error_trace}")
+        raise HTTPException(
+            status_code=500, 
+            detail={
+                "error": "match_failure", 
+                "details": str(e),
+                "type": type(e).__name__
+            }
+        )

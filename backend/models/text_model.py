@@ -42,7 +42,8 @@ def load_text_model(path: str) -> Any:
         class SimpleTextModel:
             def embed_text(self, text: str) -> np.ndarray:
                 seed = abs(hash(text)) % (2**32 - 1)
-                return np.random.RandomState(seed).randn(512).astype("float32")
+                # Match stored embeddings dimension (768)
+                return np.random.RandomState(seed).randn(768).astype("float32")
         return SimpleTextModel()
     
     try:
@@ -72,7 +73,8 @@ def load_text_model(path: str) -> Any:
                 # For simplicity, return a random embedding based on hash
                 # In a full implementation, you'd use a sentence transformer here
                 seed = abs(hash(text)) % (2**32 - 1)
-                return np.random.RandomState(seed).randn(512).astype("float32")
+                # Match stored embeddings dimension (768)
+                return np.random.RandomState(seed).randn(768).astype("float32")
             
             def get_state(self):
                 """Return the loaded state for use by other components."""
@@ -92,7 +94,8 @@ def load_text_model(path: str) -> Any:
         class SimpleTextModel:
             def embed_text(self, text: str) -> np.ndarray:
                 seed = abs(hash(text)) % (2**32 - 1)
-                return np.random.RandomState(seed).randn(512).astype("float32")
+                # Match stored embeddings dimension (768)
+                return np.random.RandomState(seed).randn(768).astype("float32")
         return SimpleTextModel()
 
 @dataclass

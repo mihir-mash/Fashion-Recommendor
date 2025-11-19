@@ -4,6 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Upload } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import Footer from "@/components/Footer";
+import { matchOutfit, getImageUrl } from "@/lib/api";
 
 const OutfitMatch = () => {
   const [image, setImage] = useState<File | null>(null);
@@ -24,7 +25,7 @@ const OutfitMatch = () => {
     }
   };
 
-  const handleMatch = () => {
+  const handleMatch = async () => {
     if (!image) {
       toast({
         title: "Image Required",
@@ -35,47 +36,36 @@ const OutfitMatch = () => {
     }
 
     setIsMatching(true);
+    setResults([]);
 
-    // Simulate matching with dummy data
-    setTimeout(() => {
-      const dummyResults = [
-        {
-          id: 1,
-          category: "Accessories",
-          name: "Leather Belt",
-          note: "Complements your outfit perfectly",
-          image: "https://images.unsplash.com/photo-1624222247344-550fb60583dc?w=500",
-        },
-        {
-          id: 2,
-          category: "Shoes",
-          name: "Canvas Sneakers",
-          note: "Casual and comfortable match",
-          image: "https://images.unsplash.com/photo-1549298916-b41d501d3772?w=500",
-        },
-        {
-          id: 3,
-          category: "Jacket",
-          name: "Bomber Jacket",
-          note: "Perfect layering piece",
-          image: "https://images.unsplash.com/photo-1551028719-00167b16eac5?w=500",
-        },
-        {
-          id: 4,
-          category: "Similar Items",
-          name: "Alternative Shirt",
-          note: "Similar style, different color",
-          image: "https://images.unsplash.com/photo-1620799140188-3b2a02fd9a77?w=500",
-        },
-      ];
+    try {
+      const matchResults = await matchOutfit(image, undefined, 6);
 
-      setResults(dummyResults);
-      setIsMatching(false);
+      // Transform results to match component expectations
+      const transformedResults = matchResults.map((item) => ({
+        id: item.id,
+        category: "Fashion Item",
+        name: item.product_display_name || `Item ${item.id}`,
+        note: item.short_explain || "Complements your outfit",
+        image: getImageUrl(item.image_url),
+        score: item.score,
+      }));
+
+      setResults(transformedResults);
       toast({
         title: "Match Complete!",
-        description: "Found items that complement your outfit.",
+        description: `Found ${transformedResults.length} items that complement your outfit.`,
       });
-    }, 2000);
+    } catch (error) {
+      console.error("Error matching outfit:", error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to match outfit. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsMatching(false);
+    }
   };
 
   return (
@@ -147,12 +137,21 @@ const OutfitMatch = () => {
                     key={item.id}
                     className="overflow-hidden border-0 shadow-[var(--shadow-card)] hover:shadow-[var(--shadow-card-hover)] transition-all duration-300"
                   >
-                    <div className="aspect-square overflow-hidden">
-                      <img
-                        src={item.image}
-                        alt={item.name}
-                        className="w-full h-full object-cover"
-                      />
+                    <div className="aspect-square overflow-hidden bg-muted">
+                      {item.image ? (
+                        <img
+                          src={item.image}
+                          alt={item.name}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect fill='%23ddd' width='400' height='400'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%23999'%3ENo Image%3C/text%3E%3C/svg%3E";
+                          }}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                          No Image
+                        </div>
+                      )}
                     </div>
                     <div className="p-4">
                       <p className="text-xs text-primary font-medium mb-1">
@@ -161,7 +160,12 @@ const OutfitMatch = () => {
                       <h3 className="font-semibold text-foreground mb-2">
                         {item.name}
                       </h3>
-                      <p className="text-sm text-muted-foreground">{item.note}</p>
+                      <p className="text-sm text-muted-foreground mb-2">{item.note}</p>
+                      {item.score !== undefined && (
+                        <span className="inline-block px-2 py-1 bg-primary/10 text-primary rounded text-xs">
+                          Score: {item.score.toFixed(2)}
+                        </span>
+                      )}
                     </div>
                   </Card>
                 ))}

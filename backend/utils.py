@@ -39,14 +39,14 @@ def color_histogram_score(img: Image.Image, target_color: str) -> float:
     return float(score)
 
 
-def mk_explanation(meta_row: dict, score: float) -> List[str]:
+def mk_explanation(meta_row: dict, score: float) -> str:
     explain = []
     if not meta_row:
-        return explain
+        return "Similar item"
     if 'masterCategory' in meta_row and meta_row.get('masterCategory'):
         explain.append(f"Same category ({meta_row.get('masterCategory')})")
     if 'baseColour' in meta_row and meta_row.get('baseColour'):
         explain.append(f"Color match: {meta_row.get('baseColour')}")
     if len(explain) == 0:
         explain.append("Similar style")
-    return explain[:3]
+    return ". ".join(explain[:3])

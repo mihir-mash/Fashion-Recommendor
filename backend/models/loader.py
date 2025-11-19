@@ -22,8 +22,8 @@ def load_image_model(path: str = None) -> Any:
         class StubImageModel:
             def embed_image(self, image):
                 import numpy as np
-                # deterministic fake embedding
-                arr = np.random.RandomState(0).randn(512).astype("float32")
+                # deterministic fake embedding - match stored embeddings dimension (768)
+                arr = np.random.RandomState(0).randn(768).astype("float32")
                 return arr
 
         return StubImageModel()
@@ -42,7 +42,8 @@ def load_text_model(path: str = None) -> Any:
             def embed_text(self, text: str):
                 import numpy as np
                 seed = abs(hash(text)) % (2**32 - 1)
-                return np.random.RandomState(seed).randn(512).astype("float32")
+                # Match stored embeddings dimension (768)
+                return np.random.RandomState(seed).randn(768).astype("float32")
 
         return StubTextModel()
 

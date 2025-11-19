@@ -6,6 +6,14 @@ from typing import Any, Dict
 
 logger = logging.getLogger("backend.models.pickle_helper")
 
+# Try to import faiss, but don't fail if it's not available
+try:
+    import faiss
+    _HAS_FAISS = True
+except ImportError:
+    faiss = None
+    _HAS_FAISS = False
+
 
 class SafeUnpickler(pickle.Unpickler):
     """Custom unpickler that can handle missing class definitions."""
@@ -21,8 +29,26 @@ class SafeUnpickler(pickle.Unpickler):
                 def __setattr__(self, name, value):
                     object.__setattr__(self, name, value)
             return StubClass
+        # Handle faiss module if not available
+        if module.startswith("faiss") and not _HAS_FAISS:
+            logger.warning(f"FAISS not available, creating stub for {module}.{name}")
+            class StubClass:
+                def __init__(self, *args, **kwargs):
+                    pass
+                def __setattr__(self, name, value):
+                    object.__setattr__(self, name, value)
+            return StubClass
         # For other modules, use default behavior
-        return super().find_class(module, name)
+        try:
+            return super().find_class(module, name)
+        except (AttributeError, ModuleNotFoundError) as e:
+            logger.warning(f"Could not load {module}.{name}, creating stub: {e}")
+            class StubClass:
+                def __init__(self, *args, **kwargs):
+                    pass
+                def __setattr__(self, name, value):
+                    object.__setattr__(self, name, value)
+            return StubClass
 
 
 def safe_load_pickle(file_path: str) -> Any:

@@ -186,10 +186,21 @@ def _compute_recommendations_for_city(city_name: str, k: int = 6) -> Dict[str, A
             top = df.sample(min(k, len(df)))
         results = []
         for _, row in top.iterrows():
+            # Try multiple possible image URL column names
+            image_url = (
+                row.get("image_url") or 
+                row.get("imageURL") or 
+                row.get("ImageURL") or
+                row.get("image") or
+                ""
+            )
+            # If image_url is a relative path, ensure it starts with /
+            if image_url and not image_url.startswith(("http://", "https://", "/")):
+                image_url = f"/static/images/{image_url}"
             results.append({
                 "id": str(row.get("id", "")),
                 "product_display_name": row.get("product_display_name", ""),
-                "image_url": row.get("image_url", "")
+                "image_url": image_url
             })
         return {"location": w.get("name", city_name), "season": season, "total_candidates": total_candidates, "results": results}
     
@@ -238,36 +249,82 @@ def _compute_recommendations_for_city(city_name: str, k: int = 6) -> Dict[str, A
             prompt = f"{season} clothing"
             qvec = _text_model.embed_text(prompt)
             # candidate index list (positions in embeddings array)
+            # Use the 'index' column which maps to embedding positions, not product IDs
             if 'index' in candidates.columns:
                 candidate_idx_list = candidates['index'].astype(int).tolist()
-            elif 'id' in candidates.columns:
-                candidate_idx_list = candidates['id'].astype(int).tolist()
             else:
+                # Fallback to dataframe index (positional)
                 candidate_idx_list = candidates.index.astype(int).tolist()
+            
+            # Filter to only include indices within embeddings array bounds
+            max_emb_idx = len(_embeddings) - 1
+            candidate_idx_list = [idx for idx in candidate_idx_list if 0 <= idx <= max_emb_idx]
+            
+            if not candidate_idx_list:
+                # If no valid candidates, fall back to simple selection
+                raise ValueError("No valid candidate indices")
             
             try:
                 scores, ids = search_index(_index, qvec, k=k, embeddings=_embeddings, candidate_ids=candidate_idx_list)
-            except TypeError:
+            except (TypeError, IndexError, ValueError) as e:
+                logger.warning(f"search_index failed: {e}, using bruteforce")
                 scores, ids = _bruteforce_score_candidates(candidate_idx_list, qvec, _embeddings, k)
             
             for sc_score, idx in zip(scores, ids):
-                row = df.iloc[int(idx)]
-                top_results.append({
-                    "id": str(row.get("id", str(idx))),
-                    "product_display_name": row.get("product_display_name", ""),
-                    "image_url": row.get("image_url", ""),
-                    "score": float(sc_score)
-                })
+                try:
+                    row = df.iloc[int(idx)]
+                    # Try multiple possible image URL column names
+                    image_url = (
+                        row.get("image_url") or 
+                        row.get("imageURL") or 
+                        row.get("ImageURL") or
+                        row.get("image") or
+                        ""
+                    )
+                    # If image_url is empty but we have an id, try to construct it
+                    if not image_url and 'id' in row:
+                        item_id = str(row.get("id", ""))
+                        if item_id:
+                            # Try common image extensions
+                            for ext in ['.jpg', '.jpeg', '.png']:
+                                potential_path = f"/static/images/{item_id}{ext}"
+                                image_url = potential_path
+                                break
+                    
+                    # If image_url is a relative path, ensure it starts with /
+                    if image_url and not image_url.startswith(("http://", "https://", "/")):
+                        image_url = f"/static/images/{image_url}"
+                    
+                    top_results.append({
+                        "id": str(row.get("id", str(idx))),
+                        "product_display_name": row.get("product_display_name", ""),
+                        "image_url": image_url,
+                        "score": float(sc_score)
+                    })
+                except (IndexError, KeyError) as e:
+                    logger.warning(f"Error accessing row at index {idx}: {e}")
+                    continue
         else:
             if 'popularity' in candidates.columns:
                 sel = candidates.sort_values('popularity', ascending=False).head(k)
             else:
                 sel = candidates.head(k)
             for _, row in sel.iterrows():
+                # Try multiple possible image URL column names
+                image_url = (
+                    row.get("image_url") or 
+                    row.get("imageURL") or 
+                    row.get("ImageURL") or
+                    row.get("image") or
+                    ""
+                )
+                # If image_url is a relative path, ensure it starts with /
+                if image_url and not image_url.startswith(("http://", "https://", "/")):
+                    image_url = f"/static/images/{image_url}"
                 top_results.append({
                     "id": str(row.get("id", "")),
                     "product_display_name": row.get("product_display_name", ""),
-                    "image_url": row.get("image_url", "")
+                    "image_url": image_url
                 })
     except Exception as e:
         logger.exception("error while ranking candidates; falling back to simple selection")

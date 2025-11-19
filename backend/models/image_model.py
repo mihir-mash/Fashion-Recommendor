@@ -36,7 +36,8 @@ def load_image_model(path: str) -> Any:
                 # deterministic hash-based embedding for stub purposes
                 arr = np.asarray(image.resize((32, 32)).convert("RGB"), dtype=np.uint8)
                 flat = arr.mean(axis=(0, 1)).astype("float32")
-                vec = np.repeat(flat, 170)[:512].astype("float32")
+                # Match stored embeddings dimension (768)
+                vec = np.repeat(flat, 256)[:768].astype("float32")
                 # normalize
                 vec = vec / (np.linalg.norm(vec) + 1e-9)
                 return vec
@@ -52,7 +53,30 @@ def load_image_model(path: str) -> Any:
             
             # Verify it has the required method
             if hasattr(model, 'embed_image'):
-                return model
+                # Wrap the model to ensure dimensions match stored embeddings (768)
+                class DimensionWrappedImageModel:
+                    def __init__(self, original_model):
+                        self._model = original_model
+                        # Copy other attributes
+                        for attr in dir(original_model):
+                            if not attr.startswith('_') and attr != 'embed_image':
+                                try:
+                                    setattr(self, attr, getattr(original_model, attr))
+                                except:
+                                    pass
+                    
+                    def embed_image(self, image: Image.Image) -> np.ndarray:
+                        emb = self._model.embed_image(image)
+                        # Ensure dimension matches stored embeddings (768)
+                        if len(emb) != 768:
+                            # Pad or truncate to 768 dimensions
+                            if len(emb) < 768:
+                                emb = np.pad(emb, (0, 768 - len(emb)), mode='constant')
+                            else:
+                                emb = emb[:768]
+                        return emb
+                
+                return DimensionWrappedImageModel(model)
             else:
                 # Try to extract attributes and create a wrapper
                 attrs = extract_model_attributes(model)
@@ -67,11 +91,20 @@ def load_image_model(path: str) -> Any:
                         def embed_image(self, image: Image.Image) -> np.ndarray:
                             # If we have a model attribute, try to use it
                             if hasattr(self, 'model'):
-                                return self.model.embed_image(image)
-                            # Otherwise use stub behavior
+                                emb = self.model.embed_image(image)
+                                # Ensure dimension matches stored embeddings (768)
+                                if len(emb) != 768:
+                                    # Pad or truncate to 768 dimensions
+                                    if len(emb) < 768:
+                                        emb = np.pad(emb, (0, 768 - len(emb)), mode='constant')
+                                    else:
+                                        emb = emb[:768]
+                                return emb
+                            # Otherwise use stub behavior with correct dimension
                             arr = np.asarray(image.resize((32, 32)).convert("RGB"), dtype=np.uint8)
                             flat = arr.mean(axis=(0, 1)).astype("float32")
-                            vec = np.repeat(flat, 170)[:512].astype("float32")
+                            # Match stored embeddings dimension (768)
+                            vec = np.repeat(flat, 256)[:768].astype("float32")
                             vec = vec / (np.linalg.norm(vec) + 1e-9)
                             return vec
                     
@@ -89,7 +122,8 @@ def load_image_model(path: str) -> Any:
                 # deterministic hash-based embedding for stub purposes
                 arr = np.asarray(image.resize((32, 32)).convert("RGB"), dtype=np.uint8)
                 flat = arr.mean(axis=(0, 1)).astype("float32")
-                vec = np.repeat(flat, 170)[:512].astype("float32")
+                # Match stored embeddings dimension (768)
+                vec = np.repeat(flat, 256)[:768].astype("float32")
                 # normalize
                 vec = vec / (np.linalg.norm(vec) + 1e-9)
                 return vec

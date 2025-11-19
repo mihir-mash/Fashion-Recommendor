@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Upload, Sparkles } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import Footer from "@/components/Footer";
+import { searchByText, searchByImage, getImageUrl } from "@/lib/api";
 
 const Generate = () => {
   const [description, setDescription] = useState("");
@@ -27,7 +28,7 @@ const Generate = () => {
     }
   };
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (!description.trim() && !image) {
       toast({
         title: "Input Required",
@@ -38,43 +39,45 @@ const Generate = () => {
     }
 
     setIsGenerating(true);
+    setResults([]);
 
-    // Simulate generation with dummy data
-    setTimeout(() => {
-      const dummyResults = [
-        {
-          id: 1,
-          name: "Elegant Summer Dress",
-          description: "Perfect for warm weather with breathable fabric",
-          image: "https://images.unsplash.com/photo-1595777457583-95e059d581b8?w=500",
-        },
-        {
-          id: 2,
-          name: "Casual Denim Jacket",
-          description: "Versatile layering piece for any occasion",
-          image: "https://images.unsplash.com/photo-1551028719-00167b16eac5?w=500",
-        },
-        {
-          id: 3,
-          name: "Classic White Sneakers",
-          description: "Comfortable and stylish everyday footwear",
-          image: "https://images.unsplash.com/photo-1549298916-b41d501d3772?w=500",
-        },
-        {
-          id: 4,
-          name: "Cozy Knit Sweater",
-          description: "Warm and comfortable for cooler days",
-          image: "https://images.unsplash.com/photo-1576566588028-4147f3842f27?w=500",
-        },
-      ];
+    try {
+      let searchResults;
+      
+      if (image) {
+        // Search by image
+        searchResults = await searchByImage(image, 6);
+      } else if (description.trim()) {
+        // Search by text
+        searchResults = await searchByText(description.trim(), 6);
+      } else {
+        throw new Error("No input provided");
+      }
 
-      setResults(dummyResults);
-      setIsGenerating(false);
+      // Transform results to match component expectations
+      const transformedResults = searchResults.map((item) => ({
+        id: item.id,
+        name: item.product_display_name || `Item ${item.id}`,
+        description: item.short_explain || "Fashion item",
+        image: getImageUrl(item.image_url),
+        score: item.score,
+      }));
+
+      setResults(transformedResults);
       toast({
         title: "Recommendations Ready!",
-        description: "Here are some outfit suggestions for you.",
+        description: `Found ${transformedResults.length} outfit suggestions for you.`,
       });
-    }, 2000);
+    } catch (error) {
+      console.error("Error generating recommendations:", error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to generate recommendations. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   return (
@@ -170,20 +173,34 @@ const Generate = () => {
                     key={item.id}
                     className="overflow-hidden border-0 shadow-[var(--shadow-card)] hover:shadow-[var(--shadow-card-hover)] transition-all duration-300"
                   >
-                    <div className="aspect-square overflow-hidden">
-                      <img
-                        src={item.image}
-                        alt={item.name}
-                        className="w-full h-full object-cover"
-                      />
+                    <div className="aspect-square overflow-hidden bg-muted">
+                      {item.image ? (
+                        <img
+                          src={item.image}
+                          alt={item.name}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect fill='%23ddd' width='400' height='400'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%23999'%3ENo Image%3C/text%3E%3C/svg%3E";
+                          }}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                          No Image
+                        </div>
+                      )}
                     </div>
                     <div className="p-4">
                       <h3 className="font-semibold text-foreground mb-2">
                         {item.name}
                       </h3>
-                      <p className="text-sm text-muted-foreground">
+                      <p className="text-sm text-muted-foreground mb-2">
                         {item.description}
                       </p>
+                      {item.score !== undefined && (
+                        <span className="inline-block px-2 py-1 bg-primary/10 text-primary rounded text-xs">
+                          Score: {item.score.toFixed(2)}
+                        </span>
+                      )}
                     </div>
                   </Card>
                 ))}

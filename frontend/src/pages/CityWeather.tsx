@@ -5,7 +5,9 @@ import { Cloud, CloudRain, Sun, CloudDrizzle, Snowflake, Loader2 } from "lucide-
 import Footer from "@/components/Footer";
 import { useToast } from "@/hooks/use-toast";
 
-const API_BASE_URL = "http://localhost:8000";
+import { getWeatherRecommendations, getImageUrl } from "@/lib/api";
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 const iconMap: Record<string, any> = {
   humid: CloudDrizzle,
@@ -33,15 +35,7 @@ const CityWeather = () => {
     const fetchWeatherData = async () => {
       try {
         setLoading(true);
-        const response = await fetch(
-          `${API_BASE_URL}/recommend/weather?location=${encodeURIComponent(city)}&k=6`
-        );
-        
-        if (!response.ok) {
-          throw new Error(`Failed to fetch weather data: ${response.statusText}`);
-        }
-        
-        const result = await response.json();
+        const result = await getWeatherRecommendations(city, 6);
         setData(result);
         setError(null);
       } catch (err) {
@@ -115,7 +109,7 @@ const CityWeather = () => {
                     <div className="aspect-[3/4] overflow-hidden bg-muted">
                       {item.image_url ? (
                         <img
-                          src={`${API_BASE_URL}${item.image_url}`}
+                          src={getImageUrl(item.image_url)}
                           alt={item.product_display_name || "Outfit"}
                           className="w-full h-full object-cover"
                           onError={(e) => {

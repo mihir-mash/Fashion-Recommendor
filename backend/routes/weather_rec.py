@@ -1,56 +1,276 @@
-from fastapi import APIRouter, HTTPException
-from typing import Optional
+from fastapi import APIRouter, HTTPException, Query
+from typing import Optional, List, Dict, Any, Tuple
 import logging
-
-from weather import fetch_weather, map_weather_to_season
-from embeddings import load_embeddings, load_meta
-from indexer import search_index, load_index
+import time
+from functools import lru_cache
 import numpy as np
+import pandas as pd
+
+from weather import fetch_weather
+from embeddings import load_embeddings, load_meta, get_embedding_by_id
+from indexer import load_index, search_index  # search_index(index, query_vec, k) -> (scores, ids)
+from models.loader import load_text_model  # optional; returns None if missing
 
 router = APIRouter()
 logger = logging.getLogger("backend.routes.weather")
 
-_index = load_index()
-_embeddings = load_embeddings()
-_meta = load_meta()
+_index = load_index()            # may be None
+_embeddings = load_embeddings()  # numpy array shaped (N,d) or None
+_meta = load_meta()              # pandas DataFrame
 
+# optional text model for season->embedding queries
+_text_model = None
+try:
+    _text_model = load_text_model()  # should return None or object with embed_text(text)->np.ndarray
+except Exception:
+    logger.warning("text model not available for weather ranking; falling back to popularity/random")
+
+# small cache for weather calls keyed by (lat,lon) or city - TTL implemented via lru_cache with manual time check
+_WEATHER_TTL_SECONDS = 15 * 60  # 15 minutes
+_weather_cache = {}  # key -> (timestamp, result)
+
+# recommendation cache: key -> (timestamp, results)
+_RECOMMENDATION_TTL_SECONDS = 30 * 60  # 30 minutes
+_rec_cache = {}
+
+def _cache_weather(key: str, result: dict):
+    _weather_cache[key] = (time.time(), result)
+
+def _get_cached_weather(key: str):
+    entry = _weather_cache.get(key)
+    if not entry:
+        return None
+    ts, data = entry
+    if time.time() - ts > _WEATHER_TTL_SECONDS:
+        _weather_cache.pop(key, None)
+        return None
+    return data
+
+
+def _get_cached_recommendation(key: str):
+    entry = _rec_cache.get(key)
+    if not entry:
+        return None
+    ts, data = entry
+    if time.time() - ts > _RECOMMENDATION_TTL_SECONDS:
+        _rec_cache.pop(key, None)
+        return None
+    return data
+
+
+def _cache_recommendation(key: str, result: dict):
+    _rec_cache[key] = (time.time(), result)
+
+def _ensure_meta_columns(df: pd.DataFrame, cols: List[str]) -> bool:
+    return all(c in df.columns for c in cols)
+
+def _candidates_from_season(df: pd.DataFrame, cats: List[str]) -> pd.DataFrame:
+    if not cats:
+        return df.copy()
+    # normalize column name variations
+    col = 'masterCategory' if 'masterCategory' in df.columns else ( 'category' if 'category' in df.columns else None)
+    if col:
+        return df[df[col].isin(cats)].copy()
+    else:
+        # can't filter by category if column missing; return full df
+        return df.copy()
+
+
+def _map_temp_to_dataset_season(temp_c: float) -> str:
+    # follow the colab mapping: <=12 winter, <=20 autumn, <=28 spring, else summer
+    try:
+        if temp_c is None:
+            return 'autumn'
+        t = float(temp_c)
+    except Exception:
+        return 'autumn'
+    if t <= 12:
+        return 'winter'
+    if t <= 20:
+        return 'autumn'
+    if t <= 28:
+        return 'spring'
+    return 'summer'
+
+def _bruteforce_score_candidates(candidate_ids: List[int], query_vec: np.ndarray, embeddings: np.ndarray, topk: int):
+    # candidate_ids are indices in embeddings array
+    if embeddings is None:
+        return [], []
+    cand_embs = embeddings[candidate_ids]  # (M, d)
+    # ensure normalized vectors
+    cand_embs = cand_embs / (np.linalg.norm(cand_embs, axis=1, keepdims=True) + 1e-10)
+    q = query_vec / (np.linalg.norm(query_vec) + 1e-10)
+    sims = (cand_embs @ q).astype("float32")
+    order = np.argsort(-sims)[:topk]
+    top_idxs = [candidate_ids[int(i)] for i in order]
+    top_scores = sims[order].tolist()
+    return top_scores, top_idxs
 
 @router.get("/weather")
-def recommend_weather(lat: Optional[float] = None, lon: Optional[float] = None, city: Optional[str] = None, k: int = 6):
+def recommend_weather(
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+    city: Optional[str] = None,
+    k: int = Query(6, ge=1, le=50)
+) -> Dict[str, Any]:
+    # validate input
+    if (lat is None or lon is None) and (city is None):
+        raise HTTPException(status_code=400, detail="Provide lat/lon OR city")
+
+    # caching key for weather and recommendations
+    cache_key = f"lat:{lat}_lon:{lon}_city:{city}"
+    cached = _get_cached_weather(cache_key)
+    if cached:
+        w = cached
+    # check if we already have a recommendation cached for this location
+    rec_cache_key = f"rec:{cache_key}_k:{k}"
+    rec_cached = _get_cached_recommendation(rec_cache_key)
+    if rec_cached is not None:
+        return rec_cached
+    else:
+        try:
+            w = fetch_weather(lat=lat, lon=lon, city=city)
+            _cache_weather(cache_key, w)
+        except Exception as e:
+            logger.exception("fetch_weather failed")
+            raise HTTPException(status_code=502, detail={"error": "weather_fetch_failed", "details": str(e)})
+
+    # map to dataset season (winter/autumn/spring/summer) based on temperature
     try:
-        w = fetch_weather(lat=lat, lon=lon, city=city)
-        mapped = map_weather_to_season(w)
-        # filter meta by categories
-        cats = mapped.get('categories', [])
-        df = _meta
-        if 'masterCategory' in df.columns:
-            candidates = df[df['masterCategory'].isin(cats)]
-        else:
-            candidates = df
-        if len(candidates) == 0:
-            # fallback random sample
-            sample = df.sample(min(k, len(df))) if len(df) > 0 else []
-            results = []
-            for _, row in (sample.iterrows() if hasattr(sample, 'iterrows') else []):
-                results.append({
-                    'id': str(row.get('id')),
-                    'product_display_name': row.get('product_display_name'),
-                    'image_url': row.get('image_url'),
-                })
-            return {"location": w.get('name', {}), "season": mapped['season'], "results": results}
-        # pick top-k by popularity if available
-        if 'popularity' in candidates.columns:
-            candidates = candidates.sort_values('popularity', ascending=False).head(k)
-        else:
-            candidates = candidates.head(k)
-        results = []
-        for _, row in candidates.iterrows():
-            results.append({
-                'id': str(row.get('id')),
-                'product_display_name': row.get('product_display_name'),
-                'image_url': row.get('image_url'),
-            })
-        return {"location": w.get('name', {}), "season": mapped['season'], "results": results}
+        temp = w.get('main', {}).get('temp')
+        season = _map_temp_to_dataset_season(temp)
+        mapped = {"temp": temp, "season": season}
     except Exception as e:
-        logger.exception(e)
-        raise HTTPException(status_code=500, detail={"error": "weather_failure", "details": str(e)})
+        logger.exception("season mapping failed")
+        raise HTTPException(status_code=500, detail={"error": "season_map_failed", "details": str(e)})
+
+    # get candidate dataframe
+    df = _meta if isinstance(_meta, pd.DataFrame) else pd.DataFrame()
+    if df.empty:
+        logger.warning("meta.csv empty or not loaded")
+        res = {"location": w.get("name", {}), "season": season, "results": []}
+        _cache_recommendation(rec_cache_key, res)
+        return res
+
+    # Build season candidates from dataset 'season' column (supports comma-separated tags)
+    if 'season_list' not in df.columns and 'season' in df.columns:
+        df['season_list'] = df['season'].fillna("").apply(lambda s: [x.strip().lower() for x in str(s).split(",") if x.strip()])
+    if 'season_list' in df.columns:
+        season_candidates = df[df['season_list'].apply(lambda lst: season in lst if isinstance(lst, list) else False)].copy()
+    else:
+        # no season information; use entire df
+        season_candidates = df.copy()
+
+    total_candidates = len(season_candidates)
+    if total_candidates == 0:
+        # fallback: return top-k overall by popularity or random sample
+        if 'popularity' in df.columns:
+            top = df.sort_values('popularity', ascending=False).head(k)
+        else:
+            top = df.sample(min(k, len(df)))
+        results = []
+        for _, row in top.iterrows():
+            results.append({
+                "id": str(row.get("id", "")),
+                "product_display_name": row.get("product_display_name", ""),
+                "image_url": row.get("image_url", "")
+            })
+        res = {"location": w.get("name", {}), "season": season, "total_candidates": total_candidates, "results": results}
+        _cache_recommendation(rec_cache_key, res)
+        return res
+
+    # Now apply the Colab-style Topwear pipeline: strict topwear -> relaxed substring -> coarse mapping -> random/sample fallback
+    # Prepare season_candidates (already computed)
+    sc_df = season_candidates.copy()
+    # normalize subCategory
+    if 'subCategory' in sc_df.columns:
+        sc_df['subCategory_norm'] = sc_df['subCategory'].fillna("").astype(str).str.strip().str.lower()
+    elif 'sub_category' in sc_df.columns:
+        sc_df['subCategory_norm'] = sc_df['sub_category'].fillna("").astype(str).str.strip().str.lower()
+    else:
+        sc_df['subCategory_norm'] = ""
+
+    # strict Topwear
+    candidates_topwear = sc_df[sc_df['subCategory_norm'] == 'topwear']
+    if len(candidates_topwear) > 0:
+        candidates = candidates_topwear.copy()
+    else:
+        # relaxed substring matches
+        substrings = ['top', 't-shirt', 'tee', 'shirt', 'blouse', 'tshirt']
+        mask = sc_df['subCategory_norm'].apply(lambda s: any(sub in s for sub in substrings))
+        candidates_relaxed = sc_df[mask]
+        if len(candidates_relaxed) > 0:
+            candidates = candidates_relaxed.copy()
+        else:
+            # coarse mapping by season
+            if season == 'winter':
+                coarse_cats = ["coats", "jacket", "knitwear", "sweaters", "topwear"]
+            elif season in ['autumn', 'spring']:
+                coarse_cats = ["shirts", "tops", "hoodies", "long sleeve", "topwear"]
+            else:
+                coarse_cats = ["shorts", "tshirts", "dresses", "tops", "topwear"]
+            candidates_coarse = sc_df[sc_df['subCategory_norm'].isin(coarse_cats)]
+            if len(candidates_coarse) > 0:
+                candidates = candidates_coarse.copy()
+            else:
+                if len(sc_df) == 0:
+                    candidates = df.sample(min(k * 5, len(df))).reset_index(drop=True)
+                else:
+                    candidates = sc_df.sample(min(k * 5, len(sc_df)), random_state=42).reset_index(drop=True)
+
+    # Ranking: if we have a text model and embeddings, use it; else fall back to popularity/random
+    top_results = []
+    try:
+        if _text_model is not None and _index is not None and _embeddings is not None:
+            prompt = f"{season} clothing"
+            qvec = _text_model.embed_text(prompt)
+            # candidate index list (positions in embeddings array)
+            if 'index' in candidates.columns:
+                candidate_idx_list = candidates['index'].astype(int).tolist()
+            elif 'id' in candidates.columns:
+                candidate_idx_list = candidates['id'].astype(int).tolist()
+            else:
+                candidate_idx_list = candidates.index.astype(int).tolist()
+
+            try:
+                scores, ids = search_index(_index, qvec, k=k, embeddings=_embeddings, candidate_ids=candidate_idx_list)
+            except TypeError:
+                scores, ids = _bruteforce_score_candidates(candidate_idx_list, qvec, _embeddings, k)
+
+            for sc_score, idx in zip(scores, ids):
+                row = df.iloc[int(idx)]
+                top_results.append({
+                    "id": str(row.get("id", str(idx))),
+                    "product_display_name": row.get("product_display_name", ""),
+                    "image_url": row.get("image_url", ""),
+                    "score": float(sc_score)
+                })
+        else:
+            if 'popularity' in candidates.columns:
+                sel = candidates.sort_values('popularity', ascending=False).head(k)
+            else:
+                sel = candidates.head(k)
+            for _, row in sel.iterrows():
+                top_results.append({
+                    "id": str(row.get("id", "")),
+                    "product_display_name": row.get("product_display_name", ""),
+                    "image_url": row.get("image_url", "")
+                })
+    except Exception as e:
+        logger.exception("error while ranking candidates; falling back to simple selection")
+        sel = candidates.head(k)
+        for _, row in sel.iterrows():
+            top_results.append({
+                "id": str(row.get("id", "")),
+                "product_display_name": row.get("product_display_name", ""),
+                "image_url": row.get("image_url", "")
+            })
+
+    res = {
+        "location": w.get("name", {}),
+        "season": season,
+        "total_candidates": total_candidates,
+        "results": top_results
+    }
+    _cache_recommendation(rec_cache_key, res)
+    return res

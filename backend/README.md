@@ -69,6 +69,17 @@ Meta:
 curl "http://localhost:8000/meta"
 ```
 
+Generate embeddings from images (uses the image model loader - will use stub if no real model present):
+
+```bash
+cd backend
+python scripts/generate_embeddings.py --meta backend/data/archive/styles.csv --out backend/data/embeddings.npy
+```
+
+Serve images
+- Images placed under `backend/data/archive/images/` are automatically served at `/static/images/<id>.jpg`.
+	Example image URL: `http://localhost:8000/static/images/15970.jpg`
+
 ## Integrating Real Models
 
 Place model files under `backend/models/` and replace the stub loader implementations in `backend/models/*.py` or ensure the loader finds your model at the configured path.

@@ -7,4 +7,10 @@ Pillow
 requests
 python-multipart
 faiss-cpu; platform_system != 'Windows'
-annoy
+httpx
+joblib
+scikit-learn
+transformers
+torch
+torchvision
+tqdm

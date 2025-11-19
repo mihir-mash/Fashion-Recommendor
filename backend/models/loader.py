@@ -16,6 +16,7 @@ def load_image_model(path: str = None) -> Any:
         from .image_model import load_image_model as _loader
         return _loader(path)
     except Exception as e:
+        logger.warning(f"Failed to load image model from {path}: {e}", exc_info=True)
         _stub_warn('image_model')
 
         class StubImageModel:
@@ -33,7 +34,8 @@ def load_text_model(path: str = None) -> Any:
     try:
         from .text_model import load_text_model as _loader
         return _loader(path)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to load text model from {path}: {e}", exc_info=True)
         _stub_warn('text_model')
 
         class StubTextModel:
@@ -50,7 +52,8 @@ def load_outfit_model(path: str = None) -> Any:
     try:
         from .outfit_model import load_outfit_model as _loader
         return _loader(path)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to load outfit model from {path}: {e}", exc_info=True)
         _stub_warn('outfit_model')
 
         class StubOutfitModel:

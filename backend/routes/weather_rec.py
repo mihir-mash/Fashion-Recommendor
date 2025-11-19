@@ -14,6 +14,9 @@ from models.loader import load_text_model  # optional; returns None if missing
 router = APIRouter()
 logger = logging.getLogger("backend.routes.weather")
 
+# Supported cities (matching frontend)
+SUPPORTED_CITIES = ["Hyderabad", "Shimla", "Goa", "Shillong", "Delhi"]
+
 _index = load_index()            # may be None
 _embeddings = load_embeddings()  # numpy array shaped (N,d) or None
 _meta = load_meta()              # pandas DataFrame
@@ -32,6 +35,9 @@ _weather_cache = {}  # key -> (timestamp, result)
 # recommendation cache: key -> (timestamp, results)
 _RECOMMENDATION_TTL_SECONDS = 30 * 60  # 30 minutes
 _rec_cache = {}
+
+# Pre-computed recommendations for all supported cities
+_precomputed_recommendations = {}  # city_name -> recommendation dict
 
 def _cache_weather(key: str, result: dict):
     _weather_cache[key] = (time.time(), result)
@@ -106,52 +112,62 @@ def _bruteforce_score_candidates(candidate_ids: List[int], query_vec: np.ndarray
     top_scores = sims[order].tolist()
     return top_scores, top_idxs
 
-@router.get("/weather")
-def recommend_weather(
-    lat: Optional[float] = None,
-    lon: Optional[float] = None,
-    city: Optional[str] = None,
-    k: int = Query(6, ge=1, le=50)
-) -> Dict[str, Any]:
-    # validate input
-    if (lat is None or lon is None) and (city is None):
-        raise HTTPException(status_code=400, detail="Provide lat/lon OR city")
+# Default weather data for supported cities (used when API key is not available)
+DEFAULT_CITY_WEATHER = {
+    "Hyderabad": {"temp": 32, "condition": "Humid", "name": "Hyderabad"},
+    "Shimla": {"temp": 15, "condition": "Cold", "name": "Shimla"},
+    "Goa": {"temp": 30, "condition": "Sunny", "name": "Goa"},
+    "Shillong": {"temp": 20, "condition": "Rainy", "name": "Shillong"},
+    "Delhi": {"temp": 28, "condition": "Sunny", "name": "Delhi"},
+}
 
-    # caching key for weather and recommendations
-    cache_key = f"lat:{lat}_lon:{lon}_city:{city}"
-    cached = _get_cached_weather(cache_key)
-    if cached:
-        w = cached
-    # check if we already have a recommendation cached for this location
-    rec_cache_key = f"rec:{cache_key}_k:{k}"
-    rec_cached = _get_cached_recommendation(rec_cache_key)
-    if rec_cached is not None:
-        return rec_cached
-    else:
-        try:
-            w = fetch_weather(lat=lat, lon=lon, city=city)
-            _cache_weather(cache_key, w)
-        except Exception as e:
-            logger.exception("fetch_weather failed")
-            raise HTTPException(status_code=502, detail={"error": "weather_fetch_failed", "details": str(e)})
 
+def _get_weather_for_city(city_name: str) -> Dict:
+    """Get weather for a city, using default data if API key is not available."""
+    try:
+        return fetch_weather(city=city_name)
+    except RuntimeError as e:
+        if "WEATHER_API_KEY" in str(e):
+            # API key not configured, use default weather data
+            if city_name in DEFAULT_CITY_WEATHER:
+                default = DEFAULT_CITY_WEATHER[city_name]
+                logger.info(f"Using default weather data for {city_name} (API key not configured)")
+                return {
+                    "name": default["name"],
+                    "main": {"temp": default["temp"]},
+                    "weather": [{"main": default["condition"]}]
+                }
+        raise
+
+
+def _compute_recommendations_for_city(city_name: str, k: int = 6) -> Dict[str, Any]:
+    """Internal function to compute recommendations for a given city."""
+    try:
+        w = _get_weather_for_city(city_name)
+    except Exception as e:
+        logger.exception(f"fetch_weather failed for {city_name}")
+        # Return empty result if weather fetch fails
+        return {
+            "location": city_name,
+            "season": "autumn",
+            "total_candidates": 0,
+            "results": []
+        }
+    
     # map to dataset season (winter/autumn/spring/summer) based on temperature
     try:
         temp = w.get('main', {}).get('temp')
         season = _map_temp_to_dataset_season(temp)
-        mapped = {"temp": temp, "season": season}
     except Exception as e:
         logger.exception("season mapping failed")
-        raise HTTPException(status_code=500, detail={"error": "season_map_failed", "details": str(e)})
-
+        season = "autumn"
+    
     # get candidate dataframe
     df = _meta if isinstance(_meta, pd.DataFrame) else pd.DataFrame()
     if df.empty:
         logger.warning("meta.csv empty or not loaded")
-        res = {"location": w.get("name", {}), "season": season, "results": []}
-        _cache_recommendation(rec_cache_key, res)
-        return res
-
+        return {"location": w.get("name", city_name), "season": season, "results": []}
+    
     # Build season candidates from dataset 'season' column (supports comma-separated tags)
     if 'season_list' not in df.columns and 'season' in df.columns:
         df['season_list'] = df['season'].fillna("").apply(lambda s: [x.strip().lower() for x in str(s).split(",") if x.strip()])
@@ -160,7 +176,7 @@ def recommend_weather(
     else:
         # no season information; use entire df
         season_candidates = df.copy()
-
+    
     total_candidates = len(season_candidates)
     if total_candidates == 0:
         # fallback: return top-k overall by popularity or random sample
@@ -175,12 +191,9 @@ def recommend_weather(
                 "product_display_name": row.get("product_display_name", ""),
                 "image_url": row.get("image_url", "")
             })
-        res = {"location": w.get("name", {}), "season": season, "total_candidates": total_candidates, "results": results}
-        _cache_recommendation(rec_cache_key, res)
-        return res
-
+        return {"location": w.get("name", city_name), "season": season, "total_candidates": total_candidates, "results": results}
+    
     # Now apply the Colab-style Topwear pipeline: strict topwear -> relaxed substring -> coarse mapping -> random/sample fallback
-    # Prepare season_candidates (already computed)
     sc_df = season_candidates.copy()
     # normalize subCategory
     if 'subCategory' in sc_df.columns:
@@ -189,7 +202,7 @@ def recommend_weather(
         sc_df['subCategory_norm'] = sc_df['sub_category'].fillna("").astype(str).str.strip().str.lower()
     else:
         sc_df['subCategory_norm'] = ""
-
+    
     # strict Topwear
     candidates_topwear = sc_df[sc_df['subCategory_norm'] == 'topwear']
     if len(candidates_topwear) > 0:
@@ -217,7 +230,7 @@ def recommend_weather(
                     candidates = df.sample(min(k * 5, len(df))).reset_index(drop=True)
                 else:
                     candidates = sc_df.sample(min(k * 5, len(sc_df)), random_state=42).reset_index(drop=True)
-
+    
     # Ranking: if we have a text model and embeddings, use it; else fall back to popularity/random
     top_results = []
     try:
@@ -231,12 +244,12 @@ def recommend_weather(
                 candidate_idx_list = candidates['id'].astype(int).tolist()
             else:
                 candidate_idx_list = candidates.index.astype(int).tolist()
-
+            
             try:
                 scores, ids = search_index(_index, qvec, k=k, embeddings=_embeddings, candidate_ids=candidate_idx_list)
             except TypeError:
                 scores, ids = _bruteforce_score_candidates(candidate_idx_list, qvec, _embeddings, k)
-
+            
             for sc_score, idx in zip(scores, ids):
                 row = df.iloc[int(idx)]
                 top_results.append({
@@ -265,12 +278,85 @@ def recommend_weather(
                 "product_display_name": row.get("product_display_name", ""),
                 "image_url": row.get("image_url", "")
             })
-
-    res = {
-        "location": w.get("name", {}),
+    
+    return {
+        "location": w.get("name", city_name),
         "season": season,
         "total_candidates": total_candidates,
         "results": top_results
     }
-    _cache_recommendation(rec_cache_key, res)
-    return res
+
+
+def _precompute_all_cities(k: int = 6):
+    """Pre-compute recommendations for all supported cities."""
+    logger.info(f"Pre-computing recommendations for {len(SUPPORTED_CITIES)} cities...")
+    for city in SUPPORTED_CITIES:
+        try:
+            rec = _compute_recommendations_for_city(city, k)
+            _precomputed_recommendations[city] = rec
+            logger.info(f"Pre-computed recommendations for {city}: {len(rec.get('results', []))} items")
+        except Exception as e:
+            logger.exception(f"Failed to pre-compute recommendations for {city}")
+            _precomputed_recommendations[city] = {
+                "location": city,
+                "season": "autumn",
+                "total_candidates": 0,
+                "results": []
+            }
+    logger.info("Finished pre-computing recommendations for all cities")
+
+
+@router.get("/weather")
+def recommend_weather(
+    location: Optional[str] = None,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+    city: Optional[str] = None,
+    k: int = Query(6, ge=1, le=50)
+) -> Dict[str, Any]:
+    """
+    Get weather-based recommendations.
+    
+    Accepts 'location' parameter (preferred) which should be one of the supported cities.
+    Falls back to lat/lon or city for backward compatibility.
+    """
+    # Priority: location > city > lat/lon
+    city_name = None
+    if location:
+        # Normalize location name (capitalize first letter)
+        city_name = location.strip().capitalize()
+        if city_name not in SUPPORTED_CITIES:
+            # Try case-insensitive match
+            city_name_lower = city_name.lower()
+            for supported in SUPPORTED_CITIES:
+                if supported.lower() == city_name_lower:
+                    city_name = supported
+                    break
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Unsupported location: {location}. Supported cities: {', '.join(SUPPORTED_CITIES)}"
+                )
+    elif city:
+        city_name = city
+    elif lat is not None and lon is not None:
+        # Use lat/lon - fetch weather and compute on the fly
+        try:
+            w = fetch_weather(lat=lat, lon=lon)
+            city_name = w.get("name", "Unknown")
+        except Exception as e:
+            logger.exception("fetch_weather failed")
+            raise HTTPException(status_code=502, detail={"error": "weather_fetch_failed", "details": str(e)})
+    else:
+        raise HTTPException(status_code=400, detail="Provide 'location' (city name), 'city', or 'lat'/'lon'")
+    
+    # If it's a supported city and we have pre-computed results, return them
+    if city_name in SUPPORTED_CITIES and city_name in _precomputed_recommendations:
+        rec = _precomputed_recommendations[city_name].copy()
+        # Adjust k if needed (return first k results)
+        if len(rec.get("results", [])) > k:
+            rec["results"] = rec["results"][:k]
+        return rec
+    
+    # Otherwise, compute on the fly (for lat/lon or unsupported cities)
+    return _compute_recommendations_for_city(city_name, k)
